@@ -1,0 +1,14 @@
+- name: Setup Go environment
+  uses: actions/setup-go@v6.1.0
+  with:
+    # The Go version to use (required)
+    go-version: '1.21'
+    # Path to version file (optional)
+    go-version-file: go.mod
+    # Check for the latest version satisfying go-version
+    check-latest: true
+    # Enable module caching
+    cache: true
+    cache-dependency-path: go.sum
+    # Target CPU architecture
+    architecture: x64
