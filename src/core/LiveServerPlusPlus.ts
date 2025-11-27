@@ -16,11 +16,11 @@ import {
   ILiveServerPlusPlusConfig
 } from './types';
 import { LSPPError } from './LSPPError';
-import { urlJoin } from '../extension/utils/urlJoin';
-import { ReloadingStrategy } from '../extension/utils/extensionConfig';
+import urlJoin from '../extension/utils/urlJoin';
+import extensionConfig, { ReloadingStrategy } from '../extension/utils/extensionConfig';
 
 interface IWsWatcher {
-  watchingPaths: string[]; //relative paths
+  watchingPaths: string[]; // relative paths
   client: WebSocket;
 }
 
@@ -60,7 +60,7 @@ export class LiveServerPlusPlus implements ILiveServerPlusPlus {
   }
 
   get isServerRunning() {
-    return this.server ? this.server!.listening : false;
+    return this.server?.listening ?? false;
   }
 
   reloadConfig(config: ILiveServerPlusPlusConfig) {
@@ -79,8 +79,8 @@ export class LiveServerPlusPlus implements ILiveServerPlusPlus {
       await this.listenServer();
       this.registerOnChangeReload();
       this.goLiveEvent.fire({ LSPP: this });
-    } catch (error) {
-      if (error.code === 'EADDRINUSE') {
+    } catch (error: unknown) {
+      if (error instanceof Error && (error as any).code === 'EADDRINUSE') {
         return this.serverErrorEvent.fire({
           LSPP: this,
           code: 'portAlreadyInUse',
@@ -88,15 +88,17 @@ export class LiveServerPlusPlus implements ILiveServerPlusPlus {
         });
       }
 
-      return this.serverErrorEvent.fire({
-        LSPP: this,
-        code: error.code,
-        message: error.message
-      });
+      if (error instanceof Error) {
+        return this.serverErrorEvent.fire({
+          LSPP: this,
+          code: error.name,
+          message: error.message
+        });
+      }
     }
   }
 
-  async shutdown() {
+  async shutdown(): Promise<void> {
     if (!this.isServerRunning) {
       return this.serverErrorEvent.fire({
         LSPP: this,
@@ -123,24 +125,23 @@ export class LiveServerPlusPlus implements ILiveServerPlusPlus {
   private init(config: ILiveServerPlusPlusConfig) {
     this.cwd = config.cwd;
     this.indexFile = config.indexFile || 'index.html';
-    this.port = config.port || 9000;
+    this.port = config.port || extensionConfig.port;
     this.debounceTimeout = config.debounceTimeout || 400;
-    this.reloadingStrategy = config.reloadingStrategy || 'hot';
+    this.reloadingStrategy = config.reloadingStrategy || extensionConfig.reloadingStrategy;
   }
 
   private registerOnChangeReload() {
     let timeout: NodeJS.Timeout;
     vscode.workspace.onDidChangeTextDocument(event => {
-      //debouncing
       clearTimeout(timeout);
       timeout = setTimeout(() => {
         const fileName = event.document.fileName;
         const action = this.getReloadingActionType(fileName);
-        const filePathFromRoot = urlJoin(fileName.replace(this.cwd!, '')); // bit tricky. This will change Windows's \ to /
+        const filePathFromRoot = urlJoin(fileName.replace(this.cwd!, ''));
         this.broadcastWs(
           {
             dom:
-              ['hot', 'partial-reload'].indexOf(action) !== -1
+              ['hot', 'partial-reload'].includes(action)
                 ? event.document.getText()
                 : undefined,
             fileName: filePathFromRoot
@@ -156,22 +157,15 @@ export class LiveServerPlusPlus implements ILiveServerPlusPlus {
     const isCSS = extName === '.css';
     const isInjectable = isInjectableFile(fileName);
 
-    if (isCSS) {
-      return 'refreshcss';
-    }
-
-    if (isInjectable) {
-      return this.reloadingStrategy;
-    }
-
+    if (isCSS) return 'refreshcss';
+    if (isInjectable) return this.reloadingStrategy;
     return 'reload';
   }
 
-  private listenServer() {
+  private listenServer(): Promise<void> {
     return new Promise((resolve, reject) => {
       if (!this.cwd) {
-        const error = new LSPPError('CWD is not defined', 'cwdUndefined');
-        return reject(error);
+        return reject(new LSPPError('CWD is not defined', 'cwdUndefined'));
       }
 
       this.server = http.createServer(this.routesHandler.bind(this));
@@ -187,16 +181,13 @@ export class LiveServerPlusPlus implements ILiveServerPlusPlus {
     });
   }
 
-  private closeServer() {
+  private closeServer(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.server!.close(err => {
-        return err ? reject(err) : resolve();
-      });
-      this.server!.emit('close');
+      this.server!.close(err => (err ? reject(err) : resolve()));
     });
   }
 
-  private closeWs() {
+  private closeWs(): Promise<void> {
     return new Promise((resolve, reject) => {
       if (!this.ws) return resolve();
       this.ws.close(err => (err ? reject(err) : resolve()));
@@ -211,16 +202,12 @@ export class LiveServerPlusPlus implements ILiveServerPlusPlus {
 
     let clients: WebSocket[] = this.ws.clients as any;
 
-    //TODO: WE SHOULD WATCH ALL FILE. FOR NOW, THE LIB WORKS ONLY FOR HTML
     if (isInjectableFile(data.fileName)) {
-      clients = this.wsWatcherList.reduce(
-        (allClients, { client, watchingPaths }) => {
-          if (this.isInWatchingList(data.fileName, watchingPaths))
-            allClients.push(client);
-          return allClients;
-        },
-        [] as WebSocket[]
-      );
+      clients = this.wsWatcherList.reduce((allClients, { client, watchingPaths }) => {
+        if (this.isInWatchingList(data.fileName, watchingPaths))
+          allClients.push(client);
+        return allClients;
+      }, [] as WebSocket[]);
     }
 
     clients.forEach(client => {
@@ -230,23 +217,13 @@ export class LiveServerPlusPlus implements ILiveServerPlusPlus {
     });
   }
 
-  isInWatchingList(target: string, dirList: string[]) {
-    for (let i = 0; i < dirList.length; i++) {
-      let dir = dirList[i];
-
-      //TODO: THIS IS NOT THE BEST WAY. IF FOLDER CONTANTS `.`, this will not work
-      if (!path.extname(dir)) {
-        dir = urlJoin(dir, this.indexFile);
-      }
-
+  private isInWatchingList(target: string, dirList: string[]): boolean {
+    for (let dir of dirList) {
+      if (!path.extname(dir)) dir = urlJoin(dir, this.indexFile);
       if (target.startsWith('/')) target = target.substr(1);
       if (dir.startsWith('/')) dir = dir.substr(1);
-
-      if (dir === target) {
-        return true;
-      }
+      if (dir === target) return true;
     }
-
     return false;
   }
 
@@ -259,15 +236,9 @@ export class LiveServerPlusPlus implements ILiveServerPlusPlus {
       ws.send(JSON.stringify({ action: 'connected' }));
       ws.on('message', (_data: string) => {
         const { watchList } = JSON.parse(_data);
-        if (watchList) {
-          this.addToWsWatcherList(ws as any, watchList);
-        }
+        if (watchList) this.addToWsWatcherList(ws as any, watchList);
       });
       ws.on('close', () => this.removeFromWsWatcherList(ws as any));
-    });
-
-    this.ws.on('close', () => {
-      console.log('disconnected');
     });
 
     this.server.on('upgrade', (request, socket, head) => {
@@ -283,21 +254,16 @@ export class LiveServerPlusPlus implements ILiveServerPlusPlus {
 
   private removeFromWsWatcherList(client: WebSocket) {
     const index = this.wsWatcherList.findIndex(e => e.client === client);
-    if (index !== -1) {
-      this.wsWatcherList.splice(index, 1);
-    }
+    if (index !== -1) this.wsWatcherList.splice(index, 1);
   }
 
   private addToWsWatcherList(client: WebSocket, watchDirs: string | string[]) {
     const _watchDirs = Array.isArray(watchDirs) ? watchDirs : [watchDirs];
-
     this.wsWatcherList.push({ client, watchingPaths: _watchDirs });
   }
 
   private applyMiddlware(req: IncomingMessage, res: ServerResponse) {
-    this.middlewares.forEach(middleware => {
-      middleware(req, res);
-    });
+    this.middlewares.forEach(middleware => middleware(req, res));
   }
 
   private routesHandler(req: ILSPPIncomingMessage, res: ServerResponse) {
@@ -306,16 +272,15 @@ export class LiveServerPlusPlus implements ILiveServerPlusPlus {
 
     this.applyMiddlware(req, res);
 
-    const file = req.file!; //file comes from one of middlware
-    const filePath = path.isAbsolute(file) ? file : path.join(cwd!, file);
+    const file = req.file!;
+    const filePath = path.isAbsolute(file) ? file : path.join(cwd, file);
     const contentType = req.contentType || '';
     const fileStream = readFileStream(
       filePath,
-      contentType.indexOf('image') !== -1 ? undefined : 'utf8'
+      contentType.includes('image') ? undefined : 'utf8'
     );
 
     fileStream.on('open', () => {
-      // TOOD: MAY BE, WE SHOULD INJECT IT INSIDE <head> TAG (although browser are not smart enought)
       if (isInjectableFile(filePath)) res.write(INJECTED_TEXT);
       fileStream.pipe(res);
     });
