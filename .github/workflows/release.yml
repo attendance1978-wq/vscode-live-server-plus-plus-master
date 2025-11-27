@@ -3,7 +3,6 @@ name: Build & Release VS Code Extension
 on:
   push:
     branches: [ "main" ]
-    # Also triggers when pushing tags like v1.0.0
     tags:
       - 'v*.*.*'
   pull_request:
@@ -17,10 +16,9 @@ jobs:
         node-version: [18.x, 20.x, 22.x]
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js environment
+      - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
@@ -30,14 +28,14 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build with Gulp
-        run: gulp
+      - name: Compile TypeScript & copy assets
+        run: npm run compile
 
-      - name: Compile TypeScript
-        run: npm run build --if-present
+      - name: Install vsce
+        run: npm install -g vsce
 
       - name: Package VS Code Extension (.vsix)
-        run: npx vsce package
+        run: vsce package
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v5
@@ -53,15 +51,14 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 18
 
-      - name: Download VSIX artifact from build
+      - name: Download VSIX artifact
         uses: actions/download-artifact@v5
         with:
           name: vscode-extension
